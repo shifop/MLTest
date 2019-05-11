@@ -7,14 +7,15 @@ import numpy as np
 import tensorflow as tf
 import time
 import math
+from tqdm import tqdm
 
 def parser(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([150], tf.int64),
-                                           'tag': tf.FixedLenFeature([150], tf.int64),
-                                           'tag_p2p': tf.FixedLenFeature([149], tf.int64),
-                                           'mask': tf.FixedLenFeature([150], tf.int64)
+                                           'seq': tf.FixedLenFeature([99], tf.int64),
+                                           'tag': tf.FixedLenFeature([99], tf.int64),
+                                           'tag_p2p': tf.FixedLenFeature([98], tf.int64),
+                                           'mask': tf.FixedLenFeature([99], tf.int64)
                                        }
                                        )
     return features['seq'], features['tag'], features['tag_p2p'], features['mask']
@@ -23,7 +24,7 @@ def parser(record):
 def parser_dev(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([150], tf.int64)
+                                           'seq': tf.FixedLenFeature([99], tf.int64)
                                        }
                                        )
     return features['seq']
@@ -32,30 +33,29 @@ def parser_dev(record):
 class TCNNConfig(object):
     """CNN配置参数"""
 
-    seq_length = 150
+    seq_length = 99
     embedding_size = 50
-    vocab_size = 10000
+    vocab_size = 74232
     pos_size = 44
-    batch_size = 64
+    batch_size = 256
     learning_rate = 1e-3
 
-    print_per_batch = 64  # 每多少轮输出一次结果
-    dev_per_batch = 640  # 多少轮验证一次
+    print_per_batch = 20  # 每多少轮输出一次结果
+    dev_per_batch = 500  # 多少轮验证一次
 
-    train_data_path = 'E:/data/workplace/jupyterlab/植被指数/数据处理/data/deal/train{}.record'
+    train_data_path = '../data/train.record'
     train_data_size = 64
-    test_data_path = 'E:/data/workplace/jupyterlab/植被指数/数据处理/data/deal/dev{}.record'
-    dev_data_path = ''
-    num_epochs = 20000
+    test_data_path = '../data/dev.record'
+    dev_data_path = '../data/dev.record'
+    num_epochs = 200
 
 
 class TextCNN(object):
-    """文本分类，CNN模型"""
 
     def __init__(self, config):
         self.config = config
         self.__createModel()
-        self.log_writer = tf.summary.FileWriter('../log/model_dataset/20190318013606',self.graph)
+        self.log_writer = tf.summary.FileWriter('../log/20190511214400',self.graph)
         self.train_data = {}
         self.test_data = {}
 
@@ -100,7 +100,11 @@ class TextCNN(object):
         with tf.name_scope("decode"):
             with tf.variable_scope("var-decode", reuse=tf.AUTO_REUSE):
                 # tag-tag 得分矩阵
+                mask = tf.argmax(mask, axis=-1)
                 g_v = tf.get_variable('g_v', [config.pos_size*config.pos_size,1], tf.float32)
+                g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
+                loss, _ = tf.contrib.crf.crf_log_likelihood(h_v, tag, mask, g_v)
+                """
                 # 计算当前标注序列的得分
                 g_c = tf.nn.embedding_lookup(g_v, tag_p2p)
                 g_c = tf.reshape(g_c, [-1, config.seq_length-1])
@@ -121,24 +125,23 @@ class TextCNN(object):
                 h_c = tf.reduce_sum(h_cc, axis=-1, keepdims=True)
 
                 # 计算归一化因子Z
-                Z = []
-                Z.append(tf.expand_dims(h_v[:, 0, :],axis=1))
                 g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
-                g_v = tf.exp(g_v)
-                h_v = tf.exp(h_v)
+                g_v = tf.expand_dims(tf.transpose(g_v, [1,0]), axis=0)
+                Z = []
+                Z.append(tf.expand_dims(h_v[:, 0, :], axis=1))
                 for index in range(1, config.seq_length):
-                    cache = tf.squeeze(Z[index-1], axis=[1])
-                    cache = tf.matmul(cache,g_v)
-                    cache = cache * h_v[:,index,:]
-                    Z.append(tf.expand_dims(cache, axis=1))
+                    cache = tf.expand_dims(tf.squeeze(Z[index-1],axis=[1]),axis=2)
+                    cache = tf.reduce_logsumexp(cache+g_v, axis=1)+h_v[:,index,:]
+                    Z.append(tf.expand_dims(cache,axis=1))
 
                 Z = tf.concat(Z, axis=1)
-                Z = tf.reduce_sum(Z, axis=-1)
+                Z = tf.reduce_logsumexp(Z, axis=-1)
                 Z = Z*mask
                 Z = tf.reduce_sum(Z,axis=-1)
                 loss = tf.reduce_mean(Z - g_c - h_c)
+                """
 
-        return loss
+        return tf.reduce_mean(-loss)
 
     def __p(self, h_v, g_v):
         """
@@ -176,14 +179,14 @@ class TextCNN(object):
         rt = []
         for index, x in enumerate(max_index):
             rt.append(path[index][x])
-        return rt
+        return np.array(rt)
 
 
     def __get_data(self, path, parser, is_train=False):
         dataset = tf.data.TFRecordDataset(path)
         dataset = dataset.map(parser, num_parallel_calls=4)
+        dataset = dataset.batch(self.config.batch_size)
         if is_train:
-            dataset = dataset.batch(self.config.batch_size)
             dataset = dataset.shuffle(64 * 10)
             dataset = dataset.prefetch(64)
         iter = tf.data.Iterator.from_structure(dataset.output_types,dataset.output_shapes)
@@ -220,6 +223,7 @@ class TextCNN(object):
             with tf.variable_scope("var-decode", reuse=tf.AUTO_REUSE):
                 # tag-tag 得分矩阵
                 g_v = tf.get_variable('g_v', [config.pos_size*config.pos_size,1], tf.float32)
+                g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
         return loss, h_v, g_v
 
     def __dev(self, inputX, input_index, inputY=None, is_test=False):
@@ -245,6 +249,7 @@ class TextCNN(object):
             self.dev_loss, self.dev_h_v, self.dev_g_v = self.__train(dev_seq, dev_tag, dev_tag_p2p, self.dev_mask)
 
             self.summary_train_loss = tf.summary.scalar( 'train_loss', self.loss)
+            self.summary_dev_loss = tf.summary.scalar('dev_loss', self.dev_loss)
 
             self.dev_tag = dev_tag
 
@@ -273,17 +278,17 @@ class TextCNN(object):
         with tf.Session(graph=self.graph, config=tf.ConfigProto(allow_soft_placement=True,
                                                                 gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
 
-            #sess.run(tf.global_variables_initializer())
-            self.saver.restore(sess, load_path)
+            sess.run(tf.global_variables_initializer())
+            # self.saver.restore(sess, load_path)
 
             for epoch in range(self.config.num_epochs):
                 if flag:
                     break
                 print('Epoch:', epoch + 1)
                 sess.run(self.train_data_op)
-                for step in range(60*64):
+                for step in tqdm(range(42427//self.config.batch_size+1)):
                     if total_batch % self.config.print_per_batch == 0:
-                        if total_batch % self.config.dev_per_batch == 0:
+                        if total_batch % self.config.dev_per_batch == 0 and total_batch != 0:
                             # 跑验证集
                             dev_loss, dev_acc = self.evaluate(sess,total_batch//self.config.dev_per_batch-1)
                             if min_loss == -1 or min_loss <= dev_acc:
@@ -321,14 +326,16 @@ class TextCNN(object):
         sess.run(self.dev_data_op)
         all_loss = 0
         dev_count = 0
-        for step in range(4*64):
-            loss_train, h_v, g_v,tag, mask, summary = sess.run([self.dev_loss,self.dev_h_v, self.dev_g_v, self.dev_tag,
+        data_size = 4714//self.config.batch_size+1
+        for step in range(data_size):
+            loss_train, dev_h_v, dev_g_v, tag, mask, summary = sess.run([self.dev_loss,self.dev_h_v,self.dev_g_v, self.dev_tag,
                                                           self.dev_mask, self.summary_dev_loss])
-            # 计算预测指
-            p_tag = self.__p(h_v, g_v)
+            # 计算预测值
+            p_tag=[tf.contrib.crf.viterbi_decode(dev_h_v[index,:,:], dev_g_v)[0] for index in range(dev_h_v.shape[0])]
             # 计算准确率
-            acc=[p_tag[:,0]]
+            p_tag = np.array(p_tag)
             p_tag = p_tag == tag
+            acc = [p_tag[:, 0]]
             for x in range(1, p_tag.shape[1]):
                 acc.append(p_tag[:,x]+acc[x-1])
             mask = mask.argmax(axis=1)
@@ -339,7 +346,7 @@ class TextCNN(object):
                 acc_v+=acc[x][index]
 
             if not math.isnan(loss_train):
-                self.log_writer.add_summary(summary, count*4*64 + step)
+                self.log_writer.add_summary(summary, count*data_size + step)
                 all_loss += loss_train
                 dev_count += 1
         return all_loss/dev_count, acc_v/size
@@ -353,5 +360,5 @@ class TextCNN(object):
 if __name__=='__main__':
     config = TCNNConfig()
     oj = TextCNN(config)
-    # path = 'E:/data/workplace/jupyterlab/植被指数/model/20190318013606/classify.ckpt'
-    # oj.train(path, path)
+    path = '../model/20190511214400/model.ckpt'
+    oj.train(path, path)

@@ -50,7 +50,7 @@ if __name__ == "__main__":
 
     words = []
     for x in train_data:
-        words.extend(x)
+        words.extend(x['seq'])
 
     words = list(set(words))
 
@@ -70,20 +70,20 @@ if __name__ == "__main__":
     # 划分训练集和验证集
     random.shuffle(train_data)
     all_size = len(train_data)
-    dev_data = train_data[:all_size // 3]
-    t_data = train_data[all_size // 3:]
+    dev_data = train_data[:all_size // 10]
+    t_data = train_data[all_size // 10:]
 
     # 序列最大长度
     cache = [len(x['seq']) for x in train_data]
     max_length = max(cache)
-    print(train_data[cache.index(max_length)]['seq'])
     min_length = min(cache)
-    print(train_data[cache.index(min_length)]['seq'])
     # 词典大小
     vocab_size = len(w2i)
 
+    print('vocab_size:%d , max_length: %d' % (vocab_size, max_length))
+
     # 生成records
-    train_writer = tf.python_io.TFRecordWriter('./data/train_bx.record')
+    train_writer = tf.python_io.TFRecordWriter('../data/train.record')
     for data in tqdm(t_data):
         """需要创建seq，tag，tag_p2p，mask"""
         length = len(data['seq'])
@@ -94,8 +94,8 @@ if __name__ == "__main__":
         tag = padding(tag, max_length, 0)
 
         tag_p2p = [tag[index - 1] * len(t2i) + tag[index] for index in range(1, len(seq))]
-        mask = [0 for x in range(len(max_length))]
-        mask[length] = 1
+        mask = [0 for x in range(max_length)]
+        mask[length-1] = 1
 
         features = tf.train.Features(feature={
             'seq': tf.train.Feature(int64_list=tf.train.Int64List(value=seq)),
@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     train_writer.close()
 
-    dev_writer = tf.python_io.TFRecordWriter('./data/train_bx.record')
+    dev_writer = tf.python_io.TFRecordWriter('../data/dev.record')
     for data in tqdm(dev_data):
         """需要创建seq，tag，tag_p2p，mask"""
         length = len(data['seq'])
@@ -118,8 +118,8 @@ if __name__ == "__main__":
         tag = padding(tag, max_length, 0)
 
         tag_p2p = [tag[index - 1] * len(t2i) + tag[index] for index in range(1, len(seq))]
-        mask = [0 for x in range(len(max_length))]
-        mask[length] = 1
+        mask = [0 for x in range(max_length)]
+        mask[length-1] = 1
 
         features = tf.train.Features(feature={
             'seq': tf.train.Feature(int64_list=tf.train.Int64List(value=seq)),
@@ -132,16 +132,16 @@ if __name__ == "__main__":
     dev_writer.close()
 
     # 保存各类map
-    with open('./data/w2i.json','w',encoding='utf-8') as f:
+    with open('../data/w2i.json','w',encoding='utf-8') as f:
         f.write(json.dumps(w2i, ensure_ascii=False))
 
-    with open('./data/i2w.json','w',encoding='utf-8') as f:
+    with open('../data/i2w.json','w',encoding='utf-8') as f:
         f.write(json.dumps(i2w, ensure_ascii=False))
 
-    with open('./data/t2i.json','w',encoding='utf-8') as f:
+    with open('../data/t2i.json','w',encoding='utf-8') as f:
         f.write(json.dumps(t2i, ensure_ascii=False))
 
-    with open('./data/i2t.json','w',encoding='utf-8') as f:
+    with open('../data/i2t.json','w',encoding='utf-8') as f:
         f.write(json.dumps(i2t, ensure_ascii=False))
 
 
