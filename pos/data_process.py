@@ -1,46 +1,147 @@
-import numpy as np
+from tqdm import tqdm
+import random
+import tensorflow as tf
+import json
+
+"""处理语料，生成tfrecord
+"""
 
 
-def p(h_v, g_v):
-    """
-    使用动态规划找到最大可能性的标注
-    :param h_v: 词-词性得分矩阵 [batch, seq_length, pos_size]
-    :param g_v: 词性-词性转移得分矩阵 [pos_size, pos_size]
-    :return:
-    """
-    pos_size = g_v.shape[0]
-    seq_length = h_v.shape[1]
-    batch_size = h_v.shape[0]
-    path = [[[] for x in range(pos_size)] for i in range(batch_size)]  # 在当前阶段，标注为不同词性的最大得分的序列
-    score = np.zeros([batch_size, seq_length, pos_size], np.float32)  # 在当前阶段，标注为对应词性的最大得分
-
-    score[:, 0, :] += h_v[:, 0, :]
-    for index in range(batch_size):
-        for i in range(pos_size):
-            path[index][i].append(i)
-    for index in range(1, seq_length):
-        # 计算在当前阶段，标注为不同词性的最大得分
-        path_cache = path
-        path = [[[] for x in range(pos_size)] for i in range(batch_size)]
-        for i in range(pos_size):
-            cache = np.array([score[:, index - 1, y] + g_v[y, i] + h_v[:, index, i] for y in range(pos_size)])
-            max_v = cache.max(axis=0)
-            max_index = cache.argmax(axis=0)
-            # 更新得分
-            score[:, index, i] = max_v
-            # 更新路径
-            for x in range(batch_size):
-                path[x][i].extend(path_cache[x][i])
-                path[x][i].append(max_index[x])
-
-    max_index = score[:,seq_length-1,:].argmax(axis=-1)
-    rt=[]
-    for index,x in enumerate(max_index):
-        rt.append(path[index][x])
-    return rt
+def padding(data, max_size, v):
+    length = len(data)
+    if length < max_size:
+        data.extend([v for x in range(max_size - length)])
+    return data[:max_size]
 
 
-if __name__=='__main__':
-    h_v = np.random.rand(32,10,44)
-    g_v = np.random.rand(44,44)
-    p(h_v,g_v)
+if __name__ == "__main__":
+    data = []
+    with open('../data/词性标注@人民日报199801.txt', 'r', encoding='utf-8') as f:
+        for line in f:
+            data.append(line.strip())
+
+    cut_data = []
+    for x in data:
+        cut_data.append(x.split(' '))
+
+    tag = []
+    train_data = []
+    for x in cut_data:
+        # 对文本再次切割,以句号，感叹号，问好，；
+        words = []
+        tags = []
+        for y in x:
+            cache = y.split('/')
+            if len(cache) < 2:
+                continue
+            else:
+                tag.append('/' + y.split('/')[1].split(']')[0])
+                words.append(cache[0])
+                tags.append(tag[-1])
+        if len(words) != 0:
+            start = 0
+            for index in range(len(words)):
+                if words[index]== '……' or words[index] == '。' or words[index] == '；' or words[index] == '？' or words[index] == '！' or index == len(words)-1:
+                    if index+1-start < 100 and index+1-start > 1:
+                        train_data.append({'seq': words[start:index+1], 'tag': tags[start:index+1]})
+                    start = index+1
+
+    tag = list(set(tag))
+
+    words = []
+    for x in train_data:
+        words.extend(x)
+
+    words = list(set(words))
+
+    # 构建tag_map,words_map
+    t2i = {}
+    w2i = {}
+    i2t = {}
+    i2w = {}
+    for index, x in enumerate(tag):
+        t2i[x] = index
+        i2t[index] = x
+
+    for index, x in enumerate(words):
+        w2i[x] = index
+        i2w[index] = x
+
+    # 划分训练集和验证集
+    random.shuffle(train_data)
+    all_size = len(train_data)
+    dev_data = train_data[:all_size // 3]
+    t_data = train_data[all_size // 3:]
+
+    # 序列最大长度
+    cache = [len(x['seq']) for x in train_data]
+    max_length = max(cache)
+    print(train_data[cache.index(max_length)]['seq'])
+    min_length = min(cache)
+    print(train_data[cache.index(min_length)]['seq'])
+    # 词典大小
+    vocab_size = len(w2i)
+
+    # 生成records
+    train_writer = tf.python_io.TFRecordWriter('./data/train_bx.record')
+    for data in tqdm(t_data):
+        """需要创建seq，tag，tag_p2p，mask"""
+        length = len(data['seq'])
+        seq = [w2i[x] for x in data['seq']]
+        seq = padding(seq, max_length, vocab_size)
+
+        tag = [t2i[x] for x in data['tag']]
+        tag = padding(tag, max_length, 0)
+
+        tag_p2p = [tag[index - 1] * len(t2i) + tag[index] for index in range(1, len(seq))]
+        mask = [0 for x in range(len(max_length))]
+        mask[length] = 1
+
+        features = tf.train.Features(feature={
+            'seq': tf.train.Feature(int64_list=tf.train.Int64List(value=seq)),
+            'tag': tf.train.Feature(int64_list=tf.train.Int64List(value=tag)),
+            'tag_p2p': tf.train.Feature(int64_list=tf.train.Int64List(value=tag_p2p)),
+            'mask': tf.train.Feature(int64_list=tf.train.Int64List(value=mask))})
+        example = tf.train.Example(features=features)
+        train_writer.write(example.SerializeToString())
+
+    train_writer.close()
+
+    dev_writer = tf.python_io.TFRecordWriter('./data/train_bx.record')
+    for data in tqdm(dev_data):
+        """需要创建seq，tag，tag_p2p，mask"""
+        length = len(data['seq'])
+        seq = [w2i[x] for x in data['seq']]
+        seq = padding(seq, max_length, vocab_size)
+
+        tag = [t2i[x] for x in data['tag']]
+        tag = padding(tag, max_length, 0)
+
+        tag_p2p = [tag[index - 1] * len(t2i) + tag[index] for index in range(1, len(seq))]
+        mask = [0 for x in range(len(max_length))]
+        mask[length] = 1
+
+        features = tf.train.Features(feature={
+            'seq': tf.train.Feature(int64_list=tf.train.Int64List(value=seq)),
+            'tag': tf.train.Feature(int64_list=tf.train.Int64List(value=tag)),
+            'tag_p2p': tf.train.Feature(int64_list=tf.train.Int64List(value=tag_p2p)),
+            'mask': tf.train.Feature(int64_list=tf.train.Int64List(value=mask))})
+        example = tf.train.Example(features=features)
+        dev_writer.write(example.SerializeToString())
+
+    dev_writer.close()
+
+    # 保存各类map
+    with open('./data/w2i.json','w',encoding='utf-8') as f:
+        f.write(json.dumps(w2i, ensure_ascii=False))
+
+    with open('./data/i2w.json','w',encoding='utf-8') as f:
+        f.write(json.dumps(i2w, ensure_ascii=False))
+
+    with open('./data/t2i.json','w',encoding='utf-8') as f:
+        f.write(json.dumps(t2i, ensure_ascii=False))
+
+    with open('./data/i2t.json','w',encoding='utf-8') as f:
+        f.write(json.dumps(i2t, ensure_ascii=False))
+
+
