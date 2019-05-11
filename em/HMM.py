@@ -109,8 +109,8 @@ class HMM(object):
             f_m, b_m = self.__fab(m, p2p, p2w, o)
 
             # 在o观测序列下，不同词性在不同位置上的概率
-            r = f_m * b_m
-            r = r / (r.sum(axis=0, keepdims=True)+sys.float_info.min)
+            r = f_m * b_m + sys.float_info.min
+            r = r / (r.sum(axis=0, keepdims=True))
 
             # 在观测序列下，不同词性在不同位置上的转移概率
             o_size = len(o)
@@ -124,7 +124,8 @@ class HMM(object):
                             cache = sys.float_info.min
                         ks[index][p_i][p_ii] = cache
 
-            ks = ks / (ks.sum(axis=2, keepdims=True).sum(axis=1, keepdims=True) + sys.float_info.min)
+            ks = ks + sys.float_info.min
+            ks = ks / ks.sum(axis=2, keepdims=True).sum(axis=1, keepdims=True)
 
             """ 更新词性分布 """
             cache = np.array([r[index][0] for index in range(pos_size)])
@@ -137,7 +138,10 @@ class HMM(object):
             """ 更新词性-词转移矩阵 """
             for p_i in range(pos_size):
                 for index in range(o_size):
-                    n_p2w_1[p_i][self.w2i[o[index]]] = n_p2w_1[p_i][self.w2i[o[index]]] + r[p_i][index]
+                    cache = n_p2w_1[p_i][self.w2i[o[index]]] + r[p_i][index]
+                    if cache==0:
+                        print('_')
+                    n_p2w_1[p_i][self.w2i[o[index]]] = cache
             n_p2w_2 = r.sum(axis=1, keepdims=True)
 
         n_m = n_m / len(Os)
@@ -155,7 +159,7 @@ class HMM(object):
         print(self.m)
         print('更新参数')
         # pool = multiprocessing.Pool(processes=6)
-        self.m, self.p2p, self.p2w = self.__up(self.m, self.p2p, self.p2w, self.data[:100])
+        self.m, self.p2p, self.p2w = self.__up(self.m, self.p2p, self.p2w, self.data)
         print('更新后的参数')
         print(self.m)
 
@@ -203,7 +207,7 @@ if __name__=="__main__":
             data.append(line.strip())
 
     cut_data = []
-    for x in data:
+    for x in data[:100]:
         cut_data.append(x.split(' '))
 
     tag = []
@@ -230,4 +234,8 @@ if __name__=="__main__":
 
     oj = HMM(words, tag, train_data)
 
-    oj.train()
+    for x in range(10):
+        if x>0:
+            print(x)
+        oj.train()
+
