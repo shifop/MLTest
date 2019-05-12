@@ -103,8 +103,7 @@ class TextCNN(object):
                 mask = tf.argmax(mask, axis=-1)
                 g_v = tf.get_variable('g_v', [config.pos_size*config.pos_size,1], tf.float32)
                 g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
-                loss, _ = tf.contrib.crf.crf_log_likelihood(h_v, tag, mask, g_v)
-                """
+
                 # 计算当前标注序列的得分
                 g_c = tf.nn.embedding_lookup(g_v, tag_p2p)
                 g_c = tf.reshape(g_c, [-1, config.seq_length-1])
@@ -139,9 +138,8 @@ class TextCNN(object):
                 Z = Z*mask
                 Z = tf.reduce_sum(Z,axis=-1)
                 loss = tf.reduce_mean(Z - g_c - h_c)
-                """
 
-        return tf.reduce_mean(-loss)
+        return loss
 
     def __p(self, h_v, g_v):
         """
