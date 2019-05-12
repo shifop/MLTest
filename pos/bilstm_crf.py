@@ -101,83 +101,80 @@ class TextCNN(object):
             with tf.variable_scope("var-decode", reuse=tf.AUTO_REUSE):
                 # tag-tag 得分矩阵
                 mask = tf.argmax(mask, axis=-1)
+                seq_mark = tf.sequence_mask(mask,config.seq_length,dtype=tf.float32)
                 g_v = tf.get_variable('g_v', [config.pos_size*config.pos_size,1], tf.float32)
-                g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
+                # g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
+                # loss,_=tf.contrib.crf.crf_log_likelihood(h_v,tag,mask,g_v)
+
 
                 # 计算当前标注序列的得分
                 g_c = tf.nn.embedding_lookup(g_v, tag_p2p)
                 g_c = tf.reshape(g_c, [-1, config.seq_length-1])
-                g_cc = [tf.expand_dims(g_c[:,0],axis=1),tf.expand_dims(g_c[:,0],axis=1)]
-                for x in range(1,config.seq_length-1):
-                    g_cc.append(g_cc[x]+tf.expand_dims(g_c[:,x],axis=1))
-
-                g_cc = tf.concat(g_cc, axis=1) * mask
-                g_c = tf.reduce_sum(g_cc, axis=-1, keepdims=True)
+                g_c = g_c * seq_mark[:,1:]
+                g_c = tf.reduce_sum(g_c, axis=-1, keepdims=True)
 
                 tag_oh = tf.one_hot(tag, config.pos_size)
                 h_c = tf.reduce_sum(tag_oh*h_v, axis=-1)
-                h_cc = [tf.expand_dims(h_c[:,0], axis=1)]
-                for x in range(1, config.seq_length):
-                    h_cc.append(h_cc[x-1]+tf.expand_dims(h_c[:,x], axis=1))
-
-                h_cc = tf.concat(h_cc, axis=1) * mask
-                h_c = tf.reduce_sum(h_cc, axis=-1, keepdims=True)
+                h_c = h_c * seq_mark
+                h_c = tf.reduce_sum(h_c, axis=-1, keepdims=True)
 
                 # 计算归一化因子Z
                 g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
-                g_v = tf.expand_dims(tf.transpose(g_v, [1,0]), axis=0)
+                g_v = tf.expand_dims(g_v, axis=0)
                 Z = []
-                Z.append(tf.expand_dims(h_v[:, 0, :], axis=1))
+                Z.append(tf.expand_dims(h_v[:, 0, :], axis=2))
                 for index in range(1, config.seq_length):
-                    cache = tf.expand_dims(tf.squeeze(Z[index-1],axis=[1]),axis=2)
-                    cache = tf.reduce_logsumexp(cache+g_v, axis=1)+h_v[:,index,:]
-                    Z.append(tf.expand_dims(cache,axis=1))
+                    cache = Z[index-1]
+                    cache = cache+g_v
+                    cache = h_v[:,index,:]+tf.reduce_logsumexp(cache, axis=1)
+                    Z.append(tf.expand_dims(cache,axis=2))
 
-                Z = tf.concat(Z, axis=1)
-                Z = tf.reduce_logsumexp(Z, axis=-1)
-                Z = Z*mask
+                Z = tf.concat(Z, axis=2)
+                Z = tf.reduce_logsumexp(Z, axis=1)
+                mask_1 = tf.maximum(
+                    tf.constant(0, dtype=mask.dtype),
+                    mask - 1)
+                Z = Z*tf.one_hot(mask_1,config.seq_length)
                 Z = tf.reduce_sum(Z,axis=-1)
-                loss = tf.reduce_mean(Z - g_c - h_c)
+                loss = Z - g_c - h_c
 
-        return loss
+        return tf.reduce_mean(loss)
 
-    def __p(self, h_v, g_v):
+    def __p(self, h_v, g_v, mask):
         """
         使用动态规划找到最大可能性的标注
         :param h_v: 词-词性得分矩阵 [batch, seq_length, pos_size]
         :param g_v: 词性-词性转移得分矩阵 [pos_size, pos_size]
+        :param mask: 有效长度
         :return:
         """
-        pos_size = g_v.shape[0]
-        seq_length = h_v.shape[1]
-        batch_size = h_v.shape[0]
-        path = [[[] for x in range(pos_size)] for i in range(batch_size)]  # 在当前阶段，标注为不同词性的最大得分的序列
-        score = np.zeros([batch_size, seq_length, pos_size], np.float32)  # 在当前阶段，标注为对应词性的最大得分
+        rt=[]
+        for index,h in enumerate(h_v):
+            pos_size = g_v.shape[0]
+            seq_length = mask[index]
+            path = [[] for x in range(pos_size)]  # 在当前阶段，标注为不同词性的最大得分的序列
+            score = np.zeros([seq_length, pos_size], np.float32)  # 在当前阶段，标注为对应词性的最大得分
 
-        score[:, 0, :] += h_v[:, 0, :]
-        for index in range(batch_size):
+            score[0, :] += h[0, :]
             for i in range(pos_size):
-                path[index][i].append(i)
-        for index in range(1, seq_length):
-            # 计算在当前阶段，标注为不同词性的最大得分
-            path_cache = path
-            path = [[[] for x in range(pos_size)] for i in range(batch_size)]
-            for i in range(pos_size):
-                cache = np.array([score[:, index - 1, y] + g_v[y, i] + h_v[:, index, i] for y in range(pos_size)])
-                max_v = cache.max(axis=0)
-                max_index = cache.argmax(axis=0)
-                # 更新得分
-                score[:, index, i] = max_v
-                # 更新路径
-                for x in range(batch_size):
-                    path[x][i].extend(path_cache[x][i])
-                    path[x][i].append(max_index[x])
+                path[i].append(i)
+            for index in range(1, seq_length):
+                # 计算在当前阶段，标注为不同词性的最大得分
+                path_cache = path
+                path = [[] for x in range(pos_size)]
+                for i in range(pos_size):
+                    cache = np.array([score[index - 1, y] + g_v[y, i] + h[index, i] for y in range(pos_size)])
+                    max_v = cache.max(axis=0)
+                    max_index = cache.argmax(axis=0)
+                    # 更新得分
+                    score[index, i] = max_v
+                    # 更新路径
+                    path[i].extend(path_cache[max_index])
+                    path[i].append(i)
 
-        max_index = score[:, seq_length - 1, :].argmax(axis=-1)
-        rt = []
-        for index, x in enumerate(max_index):
-            rt.append(path[index][x])
-        return np.array(rt)
+            max_index = score[seq_length - 1, :].argmax(axis=-1)
+            rt.append(path[max_index])
+        return rt
 
 
     def __get_data(self, path, parser, is_train=False):
@@ -222,7 +219,7 @@ class TextCNN(object):
                 # tag-tag 得分矩阵
                 g_v = tf.get_variable('g_v', [config.pos_size*config.pos_size,1], tf.float32)
                 g_v = tf.reshape(g_v, [config.pos_size, config.pos_size])
-        return loss, h_v, g_v
+        return loss,h_v,g_v
 
     def __dev(self, inputX, input_index, inputY=None, is_test=False):
         input = tf.split(inputX, 12)
@@ -243,8 +240,8 @@ class TextCNN(object):
             dev_seq, dev_tag, dev_tag_p2p, self.dev_mask, self.dev_data_op = self.__get_data(self.config.test_data_path, parser)
             test_seq, self.p_data_op = self.__get_dev_data(self.config.dev_data_path, parser_dev)
 
-            self.loss, self.h_v, self.g_v = self.__train(seq, tag, tag_p2p, self.mask)
-            self.dev_loss, self.dev_h_v, self.dev_g_v = self.__train(dev_seq, dev_tag, dev_tag_p2p, self.dev_mask)
+            self.loss,self.h_v,self.g_v = self.__train(seq, tag, tag_p2p, self.mask)
+            self.dev_loss,self.dev_h_v,self.dev_g_v = self.__train(dev_seq, dev_tag, dev_tag_p2p, self.dev_mask)
 
             self.summary_train_loss = tf.summary.scalar( 'train_loss', self.loss)
             self.summary_dev_loss = tf.summary.scalar('dev_loss', self.dev_loss)
@@ -286,7 +283,7 @@ class TextCNN(object):
                 sess.run(self.train_data_op)
                 for step in tqdm(range(42427//self.config.batch_size+1)):
                     if total_batch % self.config.print_per_batch == 0:
-                        if total_batch % self.config.dev_per_batch == 0 and total_batch != 0:
+                        if total_batch % self.config.dev_per_batch == 0 and total_batch!=0:
                             # 跑验证集
                             dev_loss, dev_acc = self.evaluate(sess,total_batch//self.config.dev_per_batch-1)
                             if min_loss == -1 or min_loss <= dev_acc:
@@ -329,19 +326,17 @@ class TextCNN(object):
             loss_train, dev_h_v, dev_g_v, tag, mask, summary = sess.run([self.dev_loss,self.dev_h_v,self.dev_g_v, self.dev_tag,
                                                           self.dev_mask, self.summary_dev_loss])
             # 计算预测值
-            p_tag=[tf.contrib.crf.viterbi_decode(dev_h_v[index,:,:], dev_g_v)[0] for index in range(dev_h_v.shape[0])]
+            # p_tag=[tf.contrib.crf.viterbi_decode(dev_h_v[index,:,:], dev_g_v)[0] for index in range(dev_h_v.shape[0])]
+            mask = mask.argmax(axis=1)
+            p_tag = self.__p(dev_h_v,dev_g_v,mask)
             # 计算准确率
             p_tag = np.array(p_tag)
-            p_tag = p_tag == tag
-            acc = [p_tag[:, 0]]
-            for x in range(1, p_tag.shape[1]):
-                acc.append(p_tag[:,x]+acc[x-1])
-            mask = mask.argmax(axis=1)
             size=0
             acc_v=0
             for index,x in enumerate(mask):
                 size+=x
-                acc_v+=acc[x][index]
+                cache=np.array(p_tag[index])==tag[index,:x]
+                acc_v+=cache.astype(int).sum()
 
             if not math.isnan(loss_train):
                 self.log_writer.add_summary(summary, count*data_size + step)
