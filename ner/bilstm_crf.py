@@ -12,10 +12,10 @@ from tqdm import tqdm
 def parser(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([209], tf.int64),
-                                           'tag': tf.FixedLenFeature([209], tf.int64),
-                                           'tag_p2p': tf.FixedLenFeature([208], tf.int64),
-                                           'mask': tf.FixedLenFeature([209], tf.int64)
+                                           'seq': tf.FixedLenFeature([577], tf.int64),
+                                           'tag': tf.FixedLenFeature([577], tf.int64),
+                                           'tag_p2p': tf.FixedLenFeature([576], tf.int64),
+                                           'mask': tf.FixedLenFeature([577], tf.int64)
                                        }
                                        )
     return features['seq'], features['tag'], features['tag_p2p'], features['mask']
@@ -24,7 +24,7 @@ def parser(record):
 def parser_dev(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([209], tf.int64)
+                                           'seq': tf.FixedLenFeature([577], tf.int64)
                                        }
                                        )
     return features['seq']
@@ -33,10 +33,10 @@ def parser_dev(record):
 class TCNNConfig(object):
     """CNN配置参数"""
 
-    seq_length = 209
+    seq_length = 577
     embedding_size = 50
-    vocab_size = 4647
-    pos_size = 4
+    vocab_size = 4465
+    pos_size = 44
     batch_size = 256
     learning_rate = 1e-3
 
@@ -281,7 +281,7 @@ class TextCNN(object):
                     break
                 print('Epoch:', epoch + 1)
                 sess.run(self.train_data_op)
-                for step in tqdm(range(42427//self.config.batch_size+1)):
+                for step in tqdm(range(20864//self.config.batch_size+1)):
                     if total_batch % self.config.print_per_batch == 0:
                         if total_batch % self.config.dev_per_batch == 0 and total_batch!=0:
                             # 跑验证集
@@ -321,7 +321,7 @@ class TextCNN(object):
         sess.run(self.dev_data_op)
         all_loss = 0
         dev_count = 0
-        data_size = 4714//self.config.batch_size+1
+        data_size = 6955//self.config.batch_size+1
         for step in range(data_size):
             loss_train, dev_h_v, dev_g_v, tag, mask, summary = sess.run([self.dev_loss,self.dev_h_v,self.dev_g_v, self.dev_tag,
                                                           self.dev_mask, self.summary_dev_loss])
