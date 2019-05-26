@@ -35,7 +35,7 @@ class TCNNConfig(object):
 
     seq_length = 209
     embedding_size = 50
-    vocab_size = 4647
+    vocab_size = 4648
     pos_size = 4
     batch_size = 256
     learning_rate = 1e-3
@@ -43,10 +43,10 @@ class TCNNConfig(object):
     print_per_batch = 20  # 每多少轮输出一次结果
     dev_per_batch = 500  # 多少轮验证一次
 
-    train_data_path = '../data/train.record'
+    train_data_path = '../data/seg/train.record'
     train_data_size = 64
-    test_data_path = '../data/dev.record'
-    dev_data_path = '../data/dev.record'
+    test_data_path = '../data/seg/dev.record'
+    dev_data_path = '../data/seg/dev.record'
     num_epochs = 200
 
 

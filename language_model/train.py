@@ -12,9 +12,9 @@ from tqdm import tqdm
 def parser(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([99], tf.int64),
-                                           'tag': tf.FixedLenFeature([99], tf.int64),
-                                           'mask': tf.FixedLenFeature([99], tf.int64)
+                                           'seq': tf.FixedLenFeature([1024], tf.int64),
+                                           'tag': tf.FixedLenFeature([1024], tf.int64),
+                                           'mask': tf.FixedLenFeature([1024], tf.int64)
                                        }
                                        )
     return features['seq'], features['tag'], features['mask']
@@ -23,7 +23,7 @@ def parser(record):
 def parser_dev(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([99], tf.int64)
+                                           'seq': tf.FixedLenFeature([1024], tf.int64)
                                        }
                                        )
     return features['seq']
@@ -31,11 +31,11 @@ def parser_dev(record):
 
 class Config(object):
     """CNN配置参数"""
-    n_vocab = 100000,  # 词库大小
-    n_ctx = 1024,  # 序列最大长度
-    n_embd = 768,  # 词向量维度
-    n_head = 12,  # 注意力头数
-    n_layer = 12,  # 网络层数
+    n_vocab = 100000  # 词库大小
+    n_ctx = 1024  # 序列最大长度
+    n_embd = 768  # 词向量维度
+    n_head = 12  # 注意力头数
+    n_layer = 12  # 网络层数
     num_sampled = 8192
 
     batch_size = 256
@@ -108,10 +108,11 @@ class GPT_2(object):
         :return:
         """
         result = model(self.config, seq, None, "gpt", tf.AUTO_REUSE)
-        h_flat = result['h_flat']
+        h_flat = tf.reshape(result['h_flat'],[-1, self.config.n_embd])
         wte = result['wte']
         basic = tf.zeros([self.config.n_vocab])
-        loss = tf.nn.sampled_softmax_loss(wte,basic, tag,h_flat, self.config.num_sampled, self.config.n_vocab)
+        tag = tf.reshape(tag, [-1,1])
+        loss = tf.nn.sampled_softmax_loss(wte, basic, tag, h_flat, self.config.num_sampled, self.config.n_vocab)
         loss = tf.reshape(loss,[-1, self.config.n_ctx])
         loss = tf.boolean_mask(loss, mask)
 
@@ -133,6 +134,8 @@ class GPT_2(object):
         logits = tf.reshape(logits, [-1, self.config.n_ctx, self.config.n_vocab])
         batch_size = tf.shape(logits)[0]
         p = tf.nn.softmax(logits, axis=-1)
+        tag_o = tf.one_hot(tag, depth=self.config.n_vocab, dtype=tf.float32)
+        p = tf.reduce_sum(p*tag_o, axis=-1)
         p = tf.boolean_mask(tf.log(p), mask)
         p = -tf.reduce_mean(p, axis=-1)
         perplexity = tf.exp(p)
@@ -148,7 +151,7 @@ class GPT_2(object):
             test_seq, self.p_data_op = self.__get_dev_data(self.config.dev_data_path, parser_dev)
 
             self.loss = self.__train(seq, tag, self.mask)
-            self.perplexity = self.__train(dev_seq, dev_tag, self.dev_mask)
+            self.perplexity = self.__dev(dev_seq, dev_tag, self.dev_mask)
 
             self.summary_train_loss = tf.summary.scalar( 'train_loss', self.loss)
             self.summary_dev_loss = tf.summary.scalar('perplexity', self.perplexity)

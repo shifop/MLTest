@@ -161,4 +161,13 @@ if __name__ == "__main__":
     with open('../data/seg/i2t.json','w',encoding='utf-8') as f:
         f.write(json.dumps(i2t, ensure_ascii=False))
 
+    with open('../data/seg/train_data.json','w',encoding='utf-8') as f:
+        f.write(json.dumps(train_data, ensure_ascii=False))
+
+
+"""
+vocab_size:4647 , max_length: 209
+100%|██████████| 42427/42427 [01:42<00:00, 414.43it/s]
+100%|██████████| 4714/4714 [00:11<00:00, 420.85it/s]
+"""
 
