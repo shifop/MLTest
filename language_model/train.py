@@ -12,9 +12,9 @@ from tqdm import tqdm
 def parser(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([1024], tf.int64),
-                                           'tag': tf.FixedLenFeature([1024], tf.int64),
-                                           'mask': tf.FixedLenFeature([1024], tf.int64)
+                                           'seq': tf.FixedLenFeature([420], tf.int64),
+                                           'tag': tf.FixedLenFeature([420], tf.int64),
+                                           'mask': tf.FixedLenFeature([1], tf.int64)
                                        }
                                        )
     return features['seq'], features['tag'], features['mask']
@@ -23,7 +23,7 @@ def parser(record):
 def parser_dev(record):
     features = tf.parse_single_example(record,
                                        features={
-                                           'seq': tf.FixedLenFeature([1024], tf.int64)
+                                           'seq': tf.FixedLenFeature([420], tf.int64)
                                        }
                                        )
     return features['seq']
@@ -32,7 +32,7 @@ def parser_dev(record):
 class Config(object):
     """CNN配置参数"""
     n_vocab = 100000  # 词库大小
-    n_ctx = 1024  # 序列最大长度
+    n_ctx = 140  # 序列最大长度
     n_embd = 768  # 词向量维度
     n_head = 12  # 注意力头数
     n_layer = 12  # 网络层数
@@ -89,11 +89,13 @@ class GPT_2(object):
 
         seq = tf.cast(seq, tf.int32)
         tag = tf.cast(tag, tf.int32)
-        mask = tf.cast(mask, tf.float32)
+        mask = tf.cast(mask, tf.int32)
 
         seq = tf.reshape(seq, [-1, self.config.n_ctx])
         tag = tf.reshape(tag, [-1, self.config.n_ctx])
-        mask = tf.reshape(mask, [-1, self.config.n_ctx])
+        tag = tf.concat([tag[:, 1:], tag[:, -1:]], axis=-1)
+        mask = tf.reshape(mask, [-1])
+        mask = tf.sequence_mask(mask, self.config.n_ctx)
 
         # 创建tag
 
@@ -108,7 +110,9 @@ class GPT_2(object):
         :return:
         """
         result = model(self.config, seq, None, "gpt", tf.AUTO_REUSE)
-        h_flat = tf.reshape(result['h_flat'],[-1, self.config.n_embd])
+        h_flat = result['h_flat']
+        # 调整标注序列
+        h_flat = tf.reshape(h_flat,[-1, self.config.n_embd])
         wte = result['wte']
         basic = tf.zeros([self.config.n_vocab])
         tag = tf.reshape(tag, [-1,1])
@@ -129,13 +133,27 @@ class GPT_2(object):
         result = model(self.config, seq, None, "gpt", tf.AUTO_REUSE)
         h_flat = result['h_flat']
         wte = result['wte']
-        basic = tf.zeros([self.config.n_vocab])
-        logits = tf.matmul(h_flat, wte, transpose_b=True)
-        logits = tf.reshape(logits, [-1, self.config.n_ctx, self.config.n_vocab])
-        batch_size = tf.shape(logits)[0]
-        p = tf.nn.softmax(logits, axis=-1)
-        tag_o = tf.one_hot(tag, depth=self.config.n_vocab, dtype=tf.float32)
-        p = tf.reduce_sum(p*tag_o, axis=-1)
+        h_flat = tf.reshape(h_flat, [-1, self.config.n_embd])
+        # 标签的wte
+        tag_w = tf.reshape(tf.gather(wte, tag), [-1, self.config.n_embd])
+        logits_tag = tf.exp(tf.reduce_sum(h_flat * tag_w, axis=-1))
+        # 循环计算logits
+        logits_all = tf.reduce_sum(tf.exp(tf.matmul(h_flat, wte[0:50000], transpose_b=True)), axis=-1)
+        def cond(logits, start_i, end_i, max_len):
+            return end_i < max_len
+        def body(logits, start_i, end_i, max_len):
+            start_i += 50000
+            end_i += 50000
+            logits = logits+ tf.reduce_sum(tf.exp(tf.matmul(h_flat, wte[start_i:end_i], transpose_b=True)), axis=-1)
+            return logits,start_i,end_i,max_len
+        logits_all, _, _, _ = tf.while_loop(cond, body, [logits_all, 0, 50000, config.n_vocab])
+        # logits = tf.matmul(h_flat, wte, transpose_b=True)
+        logits = logits_tag/logits_all
+        logits = tf.reshape(logits, [-1, self.config.n_ctx])
+        # p = tf.nn.softmax(logits, axis=-1)
+        p = logits
+        # tag_o = tf.one_hot(tag, depth=self.config.n_vocab, dtype=tf.float32)
+        # p = tf.reduce_sum(p*tag_o, axis=-1)
         p = tf.boolean_mask(tf.log(p), mask)
         p = -tf.reduce_mean(p, axis=-1)
         perplexity = tf.exp(p)
@@ -187,7 +205,7 @@ class GPT_2(object):
                     break
                 print('Epoch:', epoch + 1)
                 sess.run(self.train_data_op)
-                for step in tqdm(range(42427//self.config.batch_size+1)):
+                for step in tqdm(range(1078209//self.config.batch_size+1)):
                     if total_batch % self.config.print_per_batch == 0:
                         if total_batch % self.config.dev_per_batch == 0 and total_batch!=0:
                             # 跑验证集

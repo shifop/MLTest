@@ -125,7 +125,7 @@ def attn(x, scope, n_state, *, past, hparams):
 
     def multihead_attn(q, k, v):
         """
-        计算多头注意力q,k,v都是相同值经过不同矩阵线性变化而来
+        计算多头注意力, q,k,v都是相同值经过不同矩阵线性变化而来
         :param q:
         :param k:
         :param v:
@@ -235,7 +235,7 @@ def model(hparams, X, past=None, scope='model', reuse=False):
         h = norm(h, 'ln_f')
 
         # Language model loss.  Do tokens <n predict token n?
-        h_flat = tf.reshape(h, [batch*sequence, hparams.n_embd])
+        h_flat = tf.reshape(h, [batch, sequence, hparams.n_embd])
         # logits = tf.matmul(h_flat, wte, transpose_b=True)
         # logits = tf.reshape(logits, [batch, sequence, hparams.n_vocab])
         # results['logits'] = logits
