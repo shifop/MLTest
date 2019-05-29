@@ -1,5 +1,7 @@
 # coding: utf-8
-"""bilstm-crf 用于词性标注"""
+
+"""单机多卡训练版本
+"""
 
 from datetime import timedelta
 from language_model.gpt_2 import *
@@ -37,6 +39,7 @@ class Config(object):
     n_head = 12  # 注意力头数
     n_layer = 12  # 网络层数
     num_sampled = 8192
+    num_gpu = 3
 
     batch_size = 256
     learning_rate = 0.00002
@@ -60,22 +63,35 @@ class GPT_2(object):
         self.train_data = {}
         self.test_data = {}
 
+    # 合并所有tower上的梯度，取平均， 对于单机多卡程序，这段代码是通用的
+    def __average_tower_grads(self, tower_grads):
+        print('towerGrads:')
+        idx = 0
+        for grads in tower_grads:  # grads 为 一个list，其中元素为 梯度-变量 组成的二元tuple
+            print('grads---tower_%d' % idx)
+            idx += 1
+
+        if len(tower_grads) == 1:
+            return tower_grads[0]
+        avgGrad_var_s = []
+        for grad_var_s in zip(*tower_grads):
+            grads = []
+            v = None
+            for g, v_ in grad_var_s:
+                g = tf.expand_dims(g, 0)
+                grads.append(g)
+                v = v_
+            all_g = tf.concat(0, grads)
+            avg_g = tf.reduce_mean(all_g, 0, keep_dims=False)
+            avgGrad_var_s.append((avg_g, v));
+        return avgGrad_var_s
+
     def initialize(self, save_path):
         with self.graph.as_default():
             saver = tf.train.Saver(name='save_saver')
         with tf.Session(graph=self.graph, config=tf.ConfigProto(allow_soft_placement=True)) as sess:
             sess.run(tf.global_variables_initializer())
             saver.save(sess, save_path)
-
-    def __get_dev_data(self, path, parser):
-        dataset = tf.data.TFRecordDataset(path)
-        dataset = dataset.map(parser, num_parallel_calls=4)
-        iter = tf.data.Iterator.from_structure(dataset.output_types,dataset.output_shapes)
-        seq = iter.get_next()
-        # 担心数据不一致，所以转化一次
-        seq = tf.reshape(seq, [-1, self.config.n_ctx])
-
-        return seq, iter.make_initializer(dataset)
 
     def __get_data(self, path, parser, is_train=False):
         dataset = tf.data.TFRecordDataset(path)
@@ -94,6 +110,10 @@ class GPT_2(object):
         seq = tf.reshape(seq, [-1, self.config.n_ctx])
         tag = tf.reshape(tag, [-1, self.config.n_ctx])
         mask = tf.reshape(mask, [-1, self.config.n_ctx])
+
+        seq = tf.split(seq, self.config.num_gpu, axis=0)
+        tag = tf.split(tag, self.config.num_gpu, axis=0)
+        mask = tf.split(mask, self.config.num_gpu, axis=0)
 
         # 创建tag
 
@@ -148,18 +168,31 @@ class GPT_2(object):
         with self.graph.as_default():
             seq, tag, self.mask, self.train_data_op=self.__get_data(self.config.train_data_path, parser, is_train=True)
             dev_seq, dev_tag, self.dev_mask, self.dev_data_op = self.__get_data(self.config.test_data_path, parser)
-            test_seq, self.p_data_op = self.__get_dev_data(self.config.dev_data_path, parser_dev)
 
-            self.loss = self.__train(seq, tag, self.mask)
-            self.perplexity = self.__dev(dev_seq, dev_tag, self.dev_mask)
-
-            self.summary_train_loss = tf.summary.scalar( 'train_loss', self.loss)
-            self.summary_dev_loss = tf.summary.scalar('perplexity', self.perplexity)
-
-            # 优化器
+            towerGrads = []
+            perplexitys = []
+            losss = []
             optimizer = tf.train.AdamOptimizer(learning_rate=self.config.learning_rate)
-            # optimizer = tf.train.MomentumOptimizer(learning_rate=self.config.learning_rate,momentum=0.9)
-            self.optim = optimizer.minimize(self.loss,global_step=tf.train.get_global_step())
+            # 使用多各GPU训练
+            for i in range(self.config.num_gpu):
+                with tf.device('/gpu:%d' % i):
+                    with tf.name_scope('tower_%d' % i) as scope:
+                        loss = self.__train(seq[i], tag[i], self.mask[i])
+                        perplexity = self.__dev(dev_seq[i], dev_tag[i], self.dev_mask[i])
+                        tf.get_variable_scope().reuse_variables()
+                        grads = optimizer.compute_gradients(loss)
+                        towerGrads.append(grads)
+                        perplexitys.append(perplexity)
+                        losss.append(loss)
+
+            avgGrad_var_s = self.__average_tower_grads(towerGrads)
+            self.optim = optimizer.apply_gradients(avgGrad_var_s)
+
+            self.loss = tf.reduce_mean(tf.concat(losss,axis=0))
+            self.perplexity = tf.reduce_mean(tf.concat(perplexitys, axis=0))
+
+            self.summary_train_loss = tf.summary.scalar('train_loss', self.loss)
+            self.summary_dev_loss = tf.summary.scalar('perplexity', self.perplexity)
 
             self.saver = tf.train.Saver()
             self.saver_v = tf.train.Saver(tf.trainable_variables())
