@@ -81,7 +81,7 @@ class GPT_2(object):
                 g = tf.expand_dims(g, 0)
                 grads.append(g)
                 v = v_
-            all_g = tf.concat(0, grads)
+            all_g = tf.concat(grads, axis=0)
             avg_g = tf.reduce_mean(all_g, 0, keep_dims=False)
             avgGrad_var_s.append((avg_g, v));
         return avgGrad_var_s
@@ -99,7 +99,7 @@ class GPT_2(object):
         dataset = dataset.batch(self.config.batch_size)
         if is_train:
             dataset = dataset.shuffle(64 * 10)
-            dataset = dataset.prefetch(64)
+            dataset = dataset.prefetch(self.config.batch_size)
         iter = tf.data.Iterator.from_structure(dataset.output_types,dataset.output_shapes)
         seq, tag, mask= iter.get_next()
 
@@ -109,7 +109,9 @@ class GPT_2(object):
 
         seq = tf.reshape(seq, [-1, self.config.n_ctx])
         tag = tf.reshape(tag, [-1, self.config.n_ctx])
-        mask = tf.reshape(mask, [-1, self.config.n_ctx])
+        tag = tf.concat([tag[:, 1:], tag[:, -1:]], axis=-1)
+        mask = tf.reshape(mask, [-1])
+        mask = tf.sequence_mask(mask, self.config.n_ctx)
 
         seq = tf.split(seq, self.config.num_gpu, axis=0)
         tag = tf.split(tag, self.config.num_gpu, axis=0)
@@ -138,7 +140,7 @@ class GPT_2(object):
 
         return tf.reduce_mean(loss)
 
-    def __dev(self,seq, tag, mask):
+    def __dev(self, seq, tag, mask):
         """
         计算困惑度
         :param seq:
@@ -149,13 +151,26 @@ class GPT_2(object):
         result = model(self.config, seq, None, "gpt", tf.AUTO_REUSE)
         h_flat = result['h_flat']
         wte = result['wte']
-        basic = tf.zeros([self.config.n_vocab])
-        logits = tf.matmul(h_flat, wte, transpose_b=True)
-        logits = tf.reshape(logits, [-1, self.config.n_ctx, self.config.n_vocab])
-        batch_size = tf.shape(logits)[0]
-        p = tf.nn.softmax(logits, axis=-1)
-        tag_o = tf.one_hot(tag, depth=self.config.n_vocab, dtype=tf.float32)
-        p = tf.reduce_sum(p*tag_o, axis=-1)
+        h_flat = tf.reshape(h_flat, [-1, self.config.n_embd])
+        # 标签的wte
+        tag_w = tf.reshape(tf.gather(wte, tag), [-1, self.config.n_embd])
+        logits_tag = tf.exp(tf.reduce_sum(h_flat * tag_w, axis=-1))
+        # 循环计算logits
+        logits_all = tf.reduce_sum(tf.exp(tf.matmul(h_flat, wte[0:50000], transpose_b=True)), axis=-1)
+
+        def cond(logits, start_i, end_i, max_len):
+            return end_i < max_len
+
+        def body(logits, start_i, end_i, max_len):
+            start_i += 50000
+            end_i += 50000
+            logits = logits + tf.reduce_sum(tf.exp(tf.matmul(h_flat, wte[start_i:end_i], transpose_b=True)), axis=-1)
+            return logits, start_i, end_i, max_len
+
+        logits_all, _, _, _ = tf.while_loop(cond, body, [logits_all, 0, 50000, config.n_vocab])
+        logits = logits_tag / logits_all
+        logits = tf.reshape(logits, [-1, self.config.n_ctx])
+        p = logits
         p = tf.boolean_mask(tf.log(p), mask)
         p = -tf.reduce_mean(p, axis=-1)
         perplexity = tf.exp(p)
@@ -166,30 +181,37 @@ class GPT_2(object):
     def __createModel(self):
         self.graph = tf.Graph()
         with self.graph.as_default():
+
             seq, tag, self.mask, self.train_data_op=self.__get_data(self.config.train_data_path, parser, is_train=True)
             dev_seq, dev_tag, self.dev_mask, self.dev_data_op = self.__get_data(self.config.test_data_path, parser)
 
             towerGrads = []
             perplexitys = []
             losss = []
-            optimizer = tf.train.AdamOptimizer(learning_rate=self.config.learning_rate)
+            # optimizer = tf.train.AdamOptimizer(learning_rate=self.config.learning_rate)
+            optimizer = tf.train.MomentumOptimizer(learning_rate=self.config.learning_rate,
+                                                   momentum=0.99, use_nesterov=True)
             # 使用多各GPU训练
-            for i in range(self.config.num_gpu):
-                with tf.device('/gpu:%d' % i):
-                    with tf.name_scope('tower_%d' % i) as scope:
-                        loss = self.__train(seq[i], tag[i], self.mask[i])
-                        perplexity = self.__dev(dev_seq[i], dev_tag[i], self.dev_mask[i])
-                        tf.get_variable_scope().reuse_variables()
-                        grads = optimizer.compute_gradients(loss)
-                        towerGrads.append(grads)
-                        perplexitys.append(perplexity)
-                        losss.append(loss)
+            with tf.variable_scope(tf.get_variable_scope()):
+                for i in range(self.config.num_gpu):
+                    with tf.device('/gpu:%d' % i):
+                        with tf.name_scope('tower_%d' % i) as scope:
+                            loss = self.__train(seq[i], tag[i], self.mask[i])
+                            perplexity = self.__dev(dev_seq[i], dev_tag[i], self.dev_mask[i])
+                            tf.get_variable_scope().reuse_variables()
+
+                            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                            with tf.control_dependencies(update_ops):
+                                grads = optimizer.compute_gradients(loss)
+                            towerGrads.append(grads)
+                            perplexitys.append(perplexity)
+                            losss.append(loss)
 
             avgGrad_var_s = self.__average_tower_grads(towerGrads)
             self.optim = optimizer.apply_gradients(avgGrad_var_s)
 
-            self.loss = tf.reduce_mean(tf.concat(losss,axis=0))
-            self.perplexity = tf.reduce_mean(tf.concat(perplexitys, axis=0))
+            self.loss = sum(losss)/config.num_gpu
+            self.perplexity = sum(perplexitys)/config.num_gpu
 
             self.summary_train_loss = tf.summary.scalar('train_loss', self.loss)
             self.summary_dev_loss = tf.summary.scalar('perplexity', self.perplexity)

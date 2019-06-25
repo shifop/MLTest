@@ -35,18 +35,18 @@ class TCNNConfig(object):
 
     seq_length = 577
     embedding_size = 50
-    vocab_size = 4465
-    pos_size = 44
+    vocab_size = 4466
+    pos_size = 7
     batch_size = 256
     learning_rate = 1e-3
 
     print_per_batch = 20  # 每多少轮输出一次结果
     dev_per_batch = 500  # 多少轮验证一次
 
-    train_data_path = '../data/train.record'
+    train_data_path = '../data/ner/train.record'
     train_data_size = 64
-    test_data_path = '../data/dev.record'
-    dev_data_path = '../data/dev.record'
+    test_data_path = '../data/ner/dev.record'
+    dev_data_path = '../data/ner/dev.record'
     num_epochs = 200
 
 
@@ -353,5 +353,5 @@ class TextCNN(object):
 if __name__=='__main__':
     config = TCNNConfig()
     oj = TextCNN(config)
-    path = '../model/20190511214400/model.ckpt'
+    path = '../model/20190531172100/model.ckpt'
     oj.train(path, path)

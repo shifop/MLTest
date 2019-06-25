@@ -11,20 +11,20 @@ import json
 class TCNNConfig(object):
     """CNN配置参数"""
 
-    seq_length = 209
+    seq_length = 577
     embedding_size = 50
-    vocab_size = 4648
-    pos_size = 4
+    vocab_size = 4466
+    pos_size = 7
     batch_size = 256
     learning_rate = 1e-3
 
     print_per_batch = 20  # 每多少轮输出一次结果
     dev_per_batch = 500  # 多少轮验证一次
 
-    train_data_path = '../data/seg/train.record'
+    train_data_path = '../data/ner/train.record'
     train_data_size = 64
-    test_data_path = '../data/seg/dev.record'
-    dev_data_path = '../data/seg/dev.record'
+    test_data_path = '../data/ner/dev.record'
+    dev_data_path = '../data/ner/dev.record'
     num_epochs = 200
 
 def read_json(path):
@@ -109,7 +109,7 @@ class TextCNN(object):
     def __createModel(self):
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self.seq = tf.placeholder(tf.int32, shape=(1, 209), name='seq')
+            self.seq = tf.placeholder(tf.int32, shape=(1, 577), name='seq')
             self.h_v = self.__encode(self.seq, self.config)
             with tf.name_scope("decode"):
                 with tf.variable_scope("var-decode", reuse=tf.AUTO_REUSE):
@@ -131,19 +131,21 @@ class TextCNN(object):
 if __name__=='__main__':
     config = TCNNConfig()
     oj = TextCNN(config)
-    w2i = read_json('../data/seg/w2i.json')
-    path = '../model/20190511214400/model.ckpt'
+    w2i = read_json('../data/ner/w2i.json')
+    path = '../model/20190531172100/model.ckpt'
     with tf.Session(graph=oj.graph, config=tf.ConfigProto(allow_soft_placement=True,
                                                           gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
         oj.saver_v.restore(sess, path)
         # seq=[x for x in '实现祖国的完全统一，是海内外全体中国人的共同心愿。']
-        seq = [x for x in '中美女主播电视辩论']
+        seq = [x for x in '一般投诉已按话术解释不认可备注：用户称当时在广州白云区的掌上营业厅办理预存50返240促销活动，' \
+                          '但没有详细说明返费时间为一年，称我方解释不清晰，' \
+                          '虚假宣传，跟用户解释，用户不认可，要求投诉。请尽快处理，否则会在消费者协会投诉，谢谢']
         content = [w2i[x] for x in seq]
         mask=[len(content)]
-        content.extend([4647 for x in range(209-len(content))])
+        content.extend([4465 for x in range(577-len(content))])
         rt = oj.evaluate(sess,[content],mask)
         p=[]
-        tag = ['s','b','m','e']
+        tag = ['B-ORG', 'B-PER', 'O', 'I-LOC', 'B-LOC', 'I-PER', 'I-ORG']
         for index,x in enumerate(seq):
             p.append(x+'/'+tag[rt[index]])
         print(' '.join(p))
